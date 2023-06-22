@@ -1,70 +1,99 @@
-import cv2
 import numpy as np
-import matplotlib.pyplot as plt
+import pandas as pd
+import cv2
+from moviepy import editor
+import moviepy
 
-def make_coordinates(image, line_parameters):
-    slope, intercept = line_parameters
-    y1 = image.shape[0]
-    y2 = int(y1*(3/5))
-    x1 = int((y1 - intercept)/slope)
-    x2 = int((y2 - intercept)/slope)
-    return np.array([x1, y1, x2, y2])
+def region_selection(image):
+	mask = np.zeros_like(image)
+	if len(image.shape) > 2:
+		channel_count = image.shape[2]
+		ignore_mask_color = (255,) * channel_count
+	else:
+		ignore_mask_color = 255
+	rows, cols = image.shape[:2]
+	bottom_left = [cols * 0.1, rows * 0.95]
+	top_left	 = [cols * 0.4, rows * 0.6]
+	bottom_right = [cols * 0.9, rows * 0.95]
+	top_right = [cols * 0.6, rows * 0.6]
+	vertices = np.array([[bottom_left, top_left, top_right, bottom_right]], dtype=np.int32)
+	cv2.fillPoly(mask, vertices, ignore_mask_color)
+	masked_image = cv2.bitwise_and(image, mask)
+	return masked_image
 
-def average_slope_intercept(image, lines):
-    left_fit= []
-    right_fit= []
-    for line in lines:
-        x1, y1, x2, y2 = line.reshape(4)
-        parameters= np.polyfit((x1, x2), (y1, y2), 1)
-        slope = parameters[0]
-        intercept = parameters[1]
-        if slope < 0:
-            left_fit.append((slope, intercept))
-        else:
-            right_fit.append((slope, intercept))
-    left_fit_average = np.average(left_fit, axis=0)
-    right_fit_average = np.average(right_fit, axis=0)
-    left_line = make_coordinates(image, left_fit_average)
-    right_line = make_coordinates(image, right_fit_average)
-    return np.array([left_line, right_line])
+def hough_transform(image):
+	rho = 1			
+	theta = np.pi/180
+	threshold = 20	
+	minLineLength = 20
+	maxLineGap = 500	
+	return cv2.HoughLinesP(image, rho = rho, theta = theta, threshold = threshold,
+						minLineLength = minLineLength, maxLineGap = maxLineGap)
+	
+def average_slope_intercept(lines):
+	left_lines = []
+	left_weights = []
+	right_lines = []
+	right_weights = []
+	
+	for line in lines:
+		for x1, y1, x2, y2 in line:
+			if x1 == x2:
+				continue
+			slope = (y2 - y1) / (x2 - x1)
+			intercept = y1 - (slope * x1)
+			length = np.sqrt(((y2 - y1) ** 2) + ((x2 - x1) ** 2))
+			if slope < 0:
+				left_lines.append((slope, intercept))
+				left_weights.append((length))
+			else:
+				right_lines.append((slope, intercept))
+				right_weights.append((length))
+	left_lane = np.dot(left_weights, left_lines) / np.sum(left_weights) if len(left_weights) > 0 else None
+	right_lane = np.dot(right_weights, right_lines) / np.sum(right_weights) if len(right_weights) > 0 else None
+	return left_lane, right_lane
 
-def canny(image):
-    gray= cv2.cvtColor(image,cv2.COLOR_RGB2GRAY)
-    blur = cv2.GaussianBlur(gray, (5,5), 0)
-    canny = cv2.Canny(blur, 50, 150)
-    return canny
+def pixel_points(y1, y2, line):
+	if line is None:
+		return None
+	slope, intercept = line
+	x1 = int((y1 - intercept)/slope)
+	x2 = int((y2 - intercept)/slope)
+	y1 = int(y1)
+	y2 = int(y2)
+	return ((x1, y1), (x2, y2))
 
-def display_lines(image,lines):
-    line_image = np.zeros_like(image)
-    if lines is not None:
-        for x1,y1,x2,y2 in lines:
-            cv2.line(line_image, (x1,y1), (x2,y2), (255, 0, 0), 10)
-    return line_image
+def lane_lines(image, lines):
+	left_lane, right_lane = average_slope_intercept(lines)
+	y1 = image.shape[0]
+	y2 = y1 * 0.6
+	left_line = pixel_points(y1, y2, left_lane)
+	right_line = pixel_points(y1, y2, right_lane)
+	return left_line, right_line
 
-def region_of_interest(image):
-    height = image.shape[0]
-    polygons = np.array([
-        [(200, height),(1100, height),(550,250)]
-        ])
-    mask = np.zeros_like(image)
-    cv2.fillPoly(mask, polygons, 255)
-    masked_image = cv2.bitwise_and(image, mask)
-    return masked_image
+	
+def draw_lane_lines(image, lines, color=[255, 0, 0], thickness=12):
+	line_image = np.zeros_like(image)
+	for line in lines:
+		if line is not None:
+			cv2.line(line_image, *line, color, thickness)
+	return cv2.addWeighted(image, 1.0, line_image, 1.0, 0.0)
 
-print('enter name of video:')
-name=input()
-cap = cv2.VideoCapture(name)
-while(cap.isOpened()):
-    _, frame = cap.read()
-    canny_image =canny(frame)
-    cropped_image = region_of_interest(canny_image)
-    lines=cv2.HoughLinesP(cropped_image, 2, np.pi/180, 100, np.array([]), minLineLength=40, maxLineGap=5)
-    averaged_lines=average_slope_intercept(frame, lines)
-    line_image= display_lines(frame, averaged_lines)
-    combo_image= cv2.addWeighted(frame, 0.8, line_image, 1, 1)
-    cv2.imshow("result", combo_image)
-    if cv2.waitKey(1) == ord('q'):
-        break
+def frame_processor(image):
+	grayscale = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+	kernel_size = 5
+	blur = cv2.GaussianBlur(grayscale, (kernel_size, kernel_size), 0)
+	low_t = 50
+	high_t = 150
+	edges = cv2.Canny(blur, low_t, high_t)
+	region = region_selection(edges)
+	hough = hough_transform(region)
+	result = draw_lane_lines(image, lane_lines(image, hough))
+	return result
 
-cap.release()
-cv2.destroyAllWindows()
+def process_video(test_video, output_video):
+	input_video = editor.VideoFileClip(test_video, audio=False)
+	processed = input_video.fl_image(frame_processor)
+	processed.write_videofile(output_video, audio=False)
+	
+process_video('test1.mp4','output.mp4')
