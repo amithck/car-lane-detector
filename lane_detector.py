@@ -1,7 +1,23 @@
 import numpy as np
 import cv2
 from moviepy import editor
-import moviepy
+from flask import Flask, request, render_template, send_file
+import os
+from werkzeug.utils import secure_filename
+
+app = Flask(__name__)
+app.config['SECRET_KEY'] = 'asdfghjkl'
+app.config['UPLOADS_FOLDER'] = 'uploads'
+
+@app.route('/', methods=['GET','POST'])
+def get_video():
+	if request.method == 'POST':
+		file = request.files['file']
+		file.save(os.path.join(app.config['UPLOADS_FOLDER'], secure_filename(file.filename)))
+		run('uploads/'+file.filename)
+		return send_file('output.mp4', as_attachment=True)
+	return render_template('front_end.html')
+	
 
 def region_selection(image):
 	mask = np.zeros_like(image)
@@ -94,5 +110,9 @@ def process_video(test_video, output_video):
 	input_video = editor.VideoFileClip(test_video, audio=False)
 	processed = input_video.fl_image(frame_processor)
 	processed.write_videofile(output_video, audio=False)
-	
-process_video('test1.mp4','output.mp4')
+
+def run(file):	
+	process_video(file,'output.mp4')
+
+if __name__ == '__main__':
+	app.run(debug=True)
