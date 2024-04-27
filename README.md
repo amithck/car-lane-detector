@@ -2,7 +2,7 @@
 
 To run, have the dependencies installed in a virtual enviornment
 ```
-pip install -r requirements.txt
+pip3 install -r requirements.txt
 ```
 
 Then run the lane_detector.py
